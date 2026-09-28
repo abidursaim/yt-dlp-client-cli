@@ -30,7 +30,7 @@ A sleek, interactive CLI tool to download videos and audio from YouTube (and oth
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/yt-dlp-downloader.git
+git clone https://github.com/abidursaim/yt-dlp-downloader.git
 cd yt-dlp-downloader
 
 # Make it executable

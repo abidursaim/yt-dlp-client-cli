@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""
+====================================================================
+                    YT-DLP INTERACTIVE DOWNLOADER
+====================================================================
+A sleek, interactive CLI program to download videos and audio 
+using yt-dlp on Kali Linux.
+====================================================================
+"""
+
+import sys
+import os
+import shutil
+import subprocess
+import re
+from pathlib import Path
+
+# --- ANSI Color Codes for Kali Linux Terminal ---
+class Colors:
+    CYAN = "\033[96m"
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    MAGENTA = "\033[95m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+
+def print_banner():
+    banner = f"""{Colors.CYAN}{Colors.BOLD}
+╔══════════════════════════════════════════════════════════════════╗
+║               🎬  YT-DLP MEDIA DOWNLOADER  🚀                   ║
+║                     Interactive Kali CLI                         ║
+╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}"""
+    print(banner)
+
+def sanitize_filename(filename: str) -> str:
+    """Remove illegal filesystem characters from custom name."""
+    sanitized = re.sub(r'[\\/*?:"<>|]', "", filename).strip()
+    return sanitized if sanitized else "download"
+
+def check_dependencies():
+    """Verify yt-dlp and ffmpeg are installed."""
+    missing = []
+    if not shutil.which("yt-dlp"):
+        missing.append("yt-dlp")
+    if not shutil.which("ffmpeg"):
+        missing.append("ffmpeg")
+    
+    if missing:
+        print(f"{Colors.RED}[!] Missing required tool(s): {', '.join(missing)}{Colors.RESET}")
+        print(f"{Colors.YELLOW}Please install them before running this program:{Colors.RESET}")
+        if "yt-dlp" in missing:
+            print("  sudo apt update && sudo apt install yt-dlp")
+        if "ffmpeg" in missing:
+            print("  sudo apt install ffmpeg")
+        sys.exit(1)
+
+def get_video_info(url: str):
+    """Fetch video title, channel, and duration using yt-dlp."""
+    print(f"\n{Colors.YELLOW}⏳ Fetching video information... Please wait.{Colors.RESET}")
+    cmd = [
+        "yt-dlp",
+        "--no-warnings",
+        "--print", "%(title)s|||%(uploader)s|||%(duration_string)s",
+        "--no-playlist",
+        url
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        out = proc.stdout.strip()
+        parts = out.split("|||")
+        title = parts[0].strip() if len(parts) > 0 else "Unknown Title"
+        uploader = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "Unknown Channel"
+        duration = parts[2].strip() if len(parts) > 2 and parts[2].strip() else "N/A"
+        return {"title": title, "uploader": uploader, "duration": duration, "valid": True}
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.strip() if e.stderr else str(e)
+        return {"valid": False, "error": err_msg}
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+def prompt_video_quality():
+    """Prompt user to select video quality."""
+    print(f"\n{Colors.CYAN}{Colors.BOLD}─── [1/4] Select Video Quality ───{Colors.RESET}")
+    print(f" {Colors.GREEN}[1]{Colors.RESET} 🌟 Best Quality Available (4K / 2K / 1080p / Max) {Colors.DIM}[Default]{Colors.RESET}")
+    print(f" {Colors.GREEN}[2]{Colors.RESET} 📺 1080p (Full HD)")
+    print(f" {Colors.GREEN}[3]{Colors.RESET} 📺 720p (HD)")
+    print(f" {Colors.GREEN}[4]{Colors.RESET} 📺 480p (SD)")
+    print(f" {Colors.GREEN}[5]{Colors.RESET} 📺 360p (Low)")
+    print(f" {Colors.GREEN}[6]{Colors.RESET} 🎵 Audio Only (Extract MP3 / Best Audio)")
+
+    while True:
+        choice = input(f"\n{Colors.BOLD}Select video quality [1-6] (Default: 1): {Colors.RESET}").strip()
+        if choice in ("", "1"):
+            return "best"
+        elif choice == "2":
+            return "1080"
+        elif choice == "3":
+            return "720"
+        elif choice == "4":
+            return "480"
+        elif choice == "5":
+            return "360"
+        elif choice == "6":
+            return "audio_only"
+        else:
+            print(f"{Colors.RED}Invalid selection. Please enter a number between 1 and 6.{Colors.RESET}")
+
+def prompt_audio_quality(is_audio_only: bool):
+    """Prompt user to select audio quality."""
+    print(f"\n{Colors.CYAN}{Colors.BOLD}─── [2/4] Select Audio Quality ───{Colors.RESET}")
+    
+    if is_audio_only:
+        print(f" {Colors.GREEN}[1]{Colors.RESET} 🎵 Best Quality MP3 (320 kbps) {Colors.DIM}[Default]{Colors.RESET}")
+        print(f" {Colors.GREEN}[2]{Colors.RESET} 🎵 High Quality MP3 (256 kbps)")
+        print(f" {Colors.GREEN}[3]{Colors.RESET} 🎵 Medium Quality MP3 (192 kbps)")
+        print(f" {Colors.GREEN}[4]{Colors.RESET} 🎵 Standard Quality MP3 (128 kbps)")
+        print(f" {Colors.GREEN}[5]{Colors.RESET} 🎵 Lossless Original (Best original format, no conversion)")
+
+        while True:
+            choice = input(f"\n{Colors.BOLD}Select audio quality [1-5] (Default: 1): {Colors.RESET}").strip()
+            if choice in ("", "1"):
+                return {"type": "mp3", "quality": "320K", "desc": "MP3 320 kbps"}
+            elif choice == "2":
+                return {"type": "mp3", "quality": "256K", "desc": "MP3 256 kbps"}
+            elif choice == "3":
+                return {"type": "mp3", "quality": "192K", "desc": "MP3 192 kbps"}
+            elif choice == "4":
+                return {"type": "mp3", "quality": "128K", "desc": "MP3 128 kbps"}
+            elif choice == "5":
+                return {"type": "original", "quality": "0", "desc": "Original Stream (Lossless)"}
+            else:
+                print(f"{Colors.RED}Invalid selection. Please enter a number between 1 and 5.{Colors.RESET}")
+    else:
+        print(f" {Colors.GREEN}[1]{Colors.RESET} 🎧 Best Available (Original lossless stream) {Colors.DIM}[Default]{Colors.RESET}")
+        print(f" {Colors.GREEN}[2]{Colors.RESET} 🎧 High Quality (320 kbps AAC)")
+        print(f" {Colors.GREEN}[3]{Colors.RESET} 🎧 Medium Quality (192 kbps AAC)")
+        print(f" {Colors.GREEN}[4]{Colors.RESET} 🎧 Standard Quality (128 kbps AAC)")
+
+        while True:
+            choice = input(f"\n{Colors.BOLD}Select audio quality [1-4] (Default: 1): {Colors.RESET}").strip()
+            if choice in ("", "1"):
+                return {"type": "best", "quality": None, "desc": "Best Available (Lossless)"}
+            elif choice == "2":
+                return {"type": "encode", "quality": "320k", "desc": "320 kbps AAC"}
+            elif choice == "3":
+                return {"type": "encode", "quality": "192k", "desc": "192 kbps AAC"}
+            elif choice == "4":
+                return {"type": "encode", "quality": "128k", "desc": "128 kbps AAC"}
+            else:
+                print(f"{Colors.RED}Invalid selection. Please enter a number between 1 and 4.{Colors.RESET}")
+
+def prompt_filename(default_title: str):
+    """Prompt user for custom filename or default title."""
+    print(f"\n{Colors.CYAN}{Colors.BOLD}─── [3/4] File Name ───{Colors.RESET}")
+    print(f"{Colors.DIM}Default Title:{Colors.RESET} {Colors.BOLD}{default_title}{Colors.RESET}")
+    print(f"Press {Colors.GREEN}[Enter]{Colors.RESET} to use default title, or type a custom name below.")
+    
+    custom_name = input(f"\n{Colors.BOLD}Enter custom filename (or press Enter for default): {Colors.RESET}").strip()
+    if not custom_name:
+        return {"custom": False, "name": default_title, "pattern": "%(title)s"}
+    else:
+        clean_name = sanitize_filename(custom_name)
+        print(f"{Colors.GREEN}✓ Custom name set to:{Colors.RESET} {clean_name}")
+        return {"custom": True, "name": clean_name, "pattern": clean_name}
+
+def prompt_destination(default_dir: str):
+    """Prompt user for download directory."""
+    print(f"\n{Colors.CYAN}{Colors.BOLD}─── [4/4] Save Location ───{Colors.RESET}")
+    print(f"{Colors.DIM}Default directory:{Colors.RESET} {Colors.BOLD}{default_dir}{Colors.RESET}")
+    
+    dest = input(f"\n{Colors.BOLD}Enter download folder (press Enter for default): {Colors.RESET}").strip()
+    if not dest:
+        save_path = os.path.abspath(default_dir)
+    else:
+        expanded = os.path.expanduser(dest)
+        save_path = os.path.abspath(expanded)
+    
+    os.makedirs(save_path, exist_ok=True)
+    return save_path
+
+def build_ytdlp_command(url: str, v_quality: str, a_quality: dict, name_info: dict, save_dir: str):
+    """Construct the exact yt-dlp command list."""
+    cmd = ["yt-dlp", "--no-warnings"]
+
+    # Output filename template
+    out_template = os.path.join(save_dir, f"{name_info['pattern']}.%(ext)s")
+    cmd.extend(["-o", out_template])
+
+    if v_quality == "audio_only":
+        cmd.append("-x")
+        if a_quality["type"] == "mp3":
+            cmd.extend(["--audio-format", "mp3", "--audio-quality", a_quality["quality"]])
+        else:
+            # Original lossless audio stream
+            cmd.extend(["--audio-format", "best", "--audio-quality", "0"])
+    else:
+        # Video + Audio download
+        if v_quality == "best":
+            cmd.extend(["-f", "bv*+ba/b"])
+        else:
+            cmd.extend(["-f", f"bv*[height<={v_quality}]+ba/b[height<={v_quality}]/best"])
+        
+        # Merge format into standard MP4
+        cmd.extend(["--merge-output-format", "mp4"])
+
+        # Audio re-encode if requested
+        if a_quality["type"] == "encode":
+            cmd.extend(["--postprocessor-args", f"Merger:-c:a aac -b:a {a_quality['quality']}"])
+
+    # Target URL
+    cmd.append(url)
+    return cmd
+
+def run_download():
+    """Main execution loop."""
+    print_banner()
+    check_dependencies()
+    
+    default_dir = os.getcwd()
+
+    while True:
+        try:
+            print(f"\n{Colors.BOLD}{Colors.MAGENTA}══════════════════════════════════════════════════════════════════{Colors.RESET}")
+            url = input(f"{Colors.BOLD}{Colors.CYAN}🔗 Enter video link / URL (or 'q' to exit): {Colors.RESET}").strip()
+            
+            if not url:
+                print(f"{Colors.RED}[!] URL cannot be empty.{Colors.RESET}")
+                continue
+            if url.lower() in ("q", "quit", "exit"):
+                print(f"\n{Colors.GREEN}Thanks for using YT-DLP Downloader. Goodbye! 👋{Colors.RESET}\n")
+                break
+
+            # Fetch metadata
+            info = get_video_info(url)
+            if not info["valid"]:
+                print(f"{Colors.RED}[✘] Could not retrieve video information.{Colors.RESET}")
+                print(f"{Colors.YELLOW}Error detail:{Colors.RESET} {info.get('error', 'Unknown error')}")
+                continue
+
+            # Display fetched metadata
+            print(f"\n{Colors.GREEN}{Colors.BOLD}✓ Video Detected!{Colors.RESET}")
+            print(f"  {Colors.BOLD}📌 Title:{Colors.RESET}    {info['title']}")
+            print(f"  {Colors.BOLD}👤 Channel:{Colors.RESET}  {info['uploader']}")
+            print(f"  {Colors.BOLD}⏱️ Duration:{Colors.RESET} {info['duration']}")
+
+            # Step 1: Video Quality
+            v_quality = prompt_video_quality()
+            is_audio_only = (v_quality == "audio_only")
+
+            # Step 2: Audio Quality
+            a_quality = prompt_audio_quality(is_audio_only)
+
+            # Step 3: Name (Default or Custom)
+            name_info = prompt_filename(info["title"])
+
+            # Step 4: Destination Directory
+            save_dir = prompt_destination(default_dir)
+
+            # Confirmation Summary
+            v_quality_labels = {
+                "best": "Best Available (Max 4K/1080p)",
+                "1080": "1080p (Full HD)",
+                "720": "720p (HD)",
+                "480": "480p (SD)",
+                "360": "360p (Low)",
+                "audio_only": "Audio Only (No Video)"
+            }
+
+            print(f"\n{Colors.CYAN}{Colors.BOLD}╔══════════════════════════════════════════════════════════════════╗{Colors.RESET}")
+            print(f"{Colors.CYAN}{Colors.BOLD}║                     🚀  READY TO DOWNLOAD                       ║{Colors.RESET}")
+            print(f"{Colors.CYAN}{Colors.BOLD}╠══════════════════════════════════════════════════════════════════╣{Colors.RESET}")
+            print(f"  {Colors.BOLD}Video Quality:{Colors.RESET}   {v_quality_labels.get(v_quality, v_quality)}")
+            print(f"  {Colors.BOLD}Audio Quality:{Colors.RESET}   {a_quality['desc']}")
+            print(f"  {Colors.BOLD}File Name:{Colors.RESET}       {name_info['name']}")
+            print(f"  {Colors.BOLD}Output Dir:{Colors.RESET}      {save_dir}")
+            print(f"{Colors.CYAN}{Colors.BOLD}╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}")
+
+            # Build and execute command
+            cmd = build_ytdlp_command(url, v_quality, a_quality, name_info, save_dir)
+            
+            print(f"\n{Colors.YELLOW}{Colors.BOLD}💥 Boom! Starting download with yt-dlp...{Colors.RESET}\n")
+
+            # Execute yt-dlp with live progress stream
+            result = subprocess.run(cmd)
+
+            if result.returncode == 0:
+                print(f"\n{Colors.GREEN}{Colors.BOLD}🎉 Download Complete!{Colors.RESET}")
+                print(f"{Colors.GREEN}📁 Saved inside:{Colors.RESET} {save_dir}\n")
+            else:
+                print(f"\n{Colors.RED}[!] Download finished with errors (code {result.returncode}).{Colors.RESET}\n")
+
+            # Ask to download another
+            again = input(f"{Colors.BOLD}Do you want to download another video? (y/N): {Colors.RESET}").strip().lower()
+            if again not in ("y", "yes"):
+                print(f"\n{Colors.GREEN}Goodbye! Happy watching! 🍿👋{Colors.RESET}\n")
+                break
+
+        except KeyboardInterrupt:
+            print(f"\n\n{Colors.YELLOW}[!] Operation interrupted by user (Ctrl+C).{Colors.RESET}")
+            break
+        except Exception as e:
+            print(f"\n{Colors.RED}[!] An unexpected error occurred: {e}{Colors.RESET}")
+            break
+
+if __name__ == "__main__":
+    run_download()

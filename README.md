@@ -15,6 +15,10 @@ A sleek, interactive CLI tool to download videos and audio from YouTube (and oth
 - **Custom filenames** with automatic sanitization
 - **Color-coded terminal UI** with emoji decorations
 - **Loop mode** — Download multiple videos in a single session
+- **📋 Playlist / Course downloads** — Auto-detects and downloads entire playlists or courses
+- **🔢 Range selection** — Download all, a range (3–10), or specific videos (1,3,5)
+- **📁 Organized output** — Creates named subfolders with numbered files
+- **♻️ Resume support** — Skip already-downloaded videos on re-run
 
 ## 📋 Prerequisites
 

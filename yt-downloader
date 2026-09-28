@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import re
+import json
 from pathlib import Path
 
 # --- ANSI Color Codes for Kali Linux Terminal ---
@@ -80,6 +81,239 @@ def get_video_info(url: str):
         return {"valid": False, "error": err_msg}
     except Exception as e:
         return {"valid": False, "error": str(e)}
+
+# ─────────────────────────────────────────────────────────────────
+#               PLAYLIST / COURSE DETECTION & INFO
+# ─────────────────────────────────────────────────────────────────
+
+def detect_playlist(url: str) -> bool:
+    """Check if a URL points to a playlist (YouTube or other sites)."""
+    playlist_patterns = [
+        r"[?&]list=",                        # YouTube playlist param
+        r"/playlist\?",                      # YouTube playlist URL
+        r"/sets/",                           # SoundCloud sets
+        r"/album/",                          # Bandcamp / Spotify albums
+        r"udemy\.com/course/",               # Udemy courses
+        r"skillshare\.com/classes/",         # Skillshare courses
+        r"coursera\.org/.*/",                # Coursera courses
+    ]
+    for pattern in playlist_patterns:
+        if re.search(pattern, url, re.IGNORECASE):
+            return True
+    return False
+
+def get_playlist_info(url: str):
+    """Fetch playlist metadata: title, uploader, and list of video entries."""
+    print(f"\n{Colors.YELLOW}⏳ Fetching playlist information... This may take a moment.{Colors.RESET}")
+    cmd = [
+        "yt-dlp",
+        "--no-warnings",
+        "--flat-playlist",
+        "--dump-single-json",
+        url
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        data = json.loads(proc.stdout)
+
+        playlist_title = data.get("title", "Unknown Playlist")
+        uploader = data.get("uploader") or data.get("channel") or "Unknown"
+        entries = data.get("entries", [])
+
+        # Build a compact list of videos with index, title, and duration
+        videos = []
+        for i, entry in enumerate(entries, start=1):
+            v_title = entry.get("title") or entry.get("id") or f"Video {i}"
+            v_duration = entry.get("duration")
+            if v_duration is not None:
+                mins, secs = divmod(int(v_duration), 60)
+                hrs, mins = divmod(mins, 60)
+                dur_str = f"{hrs}:{mins:02d}:{secs:02d}" if hrs else f"{mins}:{secs:02d}"
+            else:
+                dur_str = "N/A"
+            videos.append({"index": i, "title": v_title, "duration": dur_str})
+
+        return {
+            "valid": True,
+            "title": playlist_title,
+            "uploader": uploader,
+            "count": len(videos),
+            "videos": videos,
+        }
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.strip() if e.stderr else str(e)
+        return {"valid": False, "error": err_msg}
+    except json.JSONDecodeError as e:
+        return {"valid": False, "error": f"Failed to parse playlist data: {e}"}
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+def display_playlist_info(info: dict):
+    """Display playlist metadata and video listing."""
+    print(f"\n{Colors.GREEN}{Colors.BOLD}📋 Playlist / Course Detected!{Colors.RESET}")
+    print(f"  {Colors.BOLD}📌 Title:{Colors.RESET}    {info['title']}")
+    print(f"  {Colors.BOLD}👤 Uploader:{Colors.RESET} {info['uploader']}")
+    print(f"  {Colors.BOLD}🎞️  Videos:{Colors.RESET}   {info['count']} items")
+
+    # Show first 15 videos as preview, plus a summary if more exist
+    preview_limit = 15
+    print(f"\n{Colors.CYAN}{Colors.BOLD}─── Video Listing ───{Colors.RESET}")
+    for v in info["videos"][:preview_limit]:
+        idx_str = f"{v['index']:>3}"
+        print(f"  {Colors.GREEN}{idx_str}.{Colors.RESET} {v['title']}  {Colors.DIM}[{v['duration']}]{Colors.RESET}")
+    if info["count"] > preview_limit:
+        remaining = info["count"] - preview_limit
+        print(f"  {Colors.DIM}... and {remaining} more video(s){Colors.RESET}")
+
+def prompt_playlist_range(total: int):
+    """Ask the user which videos from the playlist to download."""
+    print(f"\n{Colors.CYAN}{Colors.BOLD}─── Playlist Download Range ───{Colors.RESET}")
+    print(f" {Colors.GREEN}[1]{Colors.RESET} 📥 Download ALL {total} videos {Colors.DIM}[Default]{Colors.RESET}")
+    print(f" {Colors.GREEN}[2]{Colors.RESET} 🔢 Download a range (e.g. videos 3 to 10)")
+    print(f" {Colors.GREEN}[3]{Colors.RESET} 🎯 Download specific videos (e.g. 1,3,5,8)")
+    print(f" {Colors.GREEN}[4]{Colors.RESET} ⏭️  Start from a specific video (resume)")
+
+    while True:
+        choice = input(f"\n{Colors.BOLD}Select option [1-4] (Default: 1): {Colors.RESET}").strip()
+
+        if choice in ("", "1"):
+            return {"mode": "all"}
+
+        elif choice == "2":
+            while True:
+                range_input = input(f"{Colors.BOLD}Enter range (start-end, e.g. 3-10): {Colors.RESET}").strip()
+                match = re.match(r"^(\d+)\s*[-–]\s*(\d+)$", range_input)
+                if match:
+                    start, end = int(match.group(1)), int(match.group(2))
+                    if 1 <= start <= end <= total:
+                        print(f"{Colors.GREEN}✓ Will download videos {start} to {end} ({end - start + 1} videos){Colors.RESET}")
+                        return {"mode": "range", "start": start, "end": end}
+                    else:
+                        print(f"{Colors.RED}Range must be between 1 and {total}, and start ≤ end.{Colors.RESET}")
+                else:
+                    print(f"{Colors.RED}Invalid format. Use: start-end (e.g. 3-10){Colors.RESET}")
+
+        elif choice == "3":
+            while True:
+                items_input = input(f"{Colors.BOLD}Enter video numbers (comma-separated, e.g. 1,3,5,8): {Colors.RESET}").strip()
+                try:
+                    items = [int(x.strip()) for x in items_input.split(",") if x.strip()]
+                    if all(1 <= x <= total for x in items) and len(items) > 0:
+                        items = sorted(set(items))
+                        print(f"{Colors.GREEN}✓ Will download {len(items)} specific video(s): {', '.join(map(str, items))}{Colors.RESET}")
+                        return {"mode": "items", "items": items}
+                    else:
+                        print(f"{Colors.RED}All numbers must be between 1 and {total}.{Colors.RESET}")
+                except ValueError:
+                    print(f"{Colors.RED}Invalid input. Enter comma-separated numbers (e.g. 1,3,5,8){Colors.RESET}")
+
+        elif choice == "4":
+            while True:
+                start_input = input(f"{Colors.BOLD}Start from video number (1-{total}): {Colors.RESET}").strip()
+                try:
+                    start = int(start_input)
+                    if 1 <= start <= total:
+                        remaining = total - start + 1
+                        print(f"{Colors.GREEN}✓ Will download from video {start} to {total} ({remaining} videos){Colors.RESET}")
+                        return {"mode": "range", "start": start, "end": total}
+                    else:
+                        print(f"{Colors.RED}Number must be between 1 and {total}.{Colors.RESET}")
+                except ValueError:
+                    print(f"{Colors.RED}Invalid number.{Colors.RESET}")
+
+        else:
+            print(f"{Colors.RED}Invalid selection. Please enter a number between 1 and 4.{Colors.RESET}")
+
+def prompt_playlist_naming():
+    """Ask the user how to name playlist files."""
+    print(f"\n{Colors.CYAN}{Colors.BOLD}─── Playlist File Naming ───{Colors.RESET}")
+    print(f" {Colors.GREEN}[1]{Colors.RESET} 📁 Numbered + Title (e.g. 001 - Video Title.mp4) {Colors.DIM}[Default]{Colors.RESET}")
+    print(f" {Colors.GREEN}[2]{Colors.RESET} 📁 Title only (e.g. Video Title.mp4)")
+    print(f" {Colors.GREEN}[3]{Colors.RESET} 📁 Numbered only (e.g. 001.mp4)")
+
+    while True:
+        choice = input(f"\n{Colors.BOLD}Select naming style [1-3] (Default: 1): {Colors.RESET}").strip()
+        if choice in ("", "1"):
+            return "%(playlist_index&{}|)s%(playlist_index& - |)s%(title)s"
+        elif choice == "2":
+            return "%(title)s"
+        elif choice == "3":
+            return "%(playlist_index)s"
+        else:
+            print(f"{Colors.RED}Invalid selection. Please enter 1, 2, or 3.{Colors.RESET}")
+
+def prompt_playlist_folder(playlist_title: str, save_dir: str):
+    """Ask whether to create a subfolder for the playlist."""
+    clean_title = sanitize_filename(playlist_title)
+    print(f"\n{Colors.CYAN}{Colors.BOLD}─── Playlist Folder ───{Colors.RESET}")
+    print(f" {Colors.GREEN}[1]{Colors.RESET} 📂 Create subfolder: {Colors.BOLD}{clean_title}/{Colors.RESET} {Colors.DIM}[Default]{Colors.RESET}")
+    print(f" {Colors.GREEN}[2]{Colors.RESET} 📂 Save all files directly into the output folder")
+    print(f" {Colors.GREEN}[3]{Colors.RESET} 📂 Custom subfolder name")
+
+    while True:
+        choice = input(f"\n{Colors.BOLD}Select option [1-3] (Default: 1): {Colors.RESET}").strip()
+        if choice in ("", "1"):
+            return os.path.join(save_dir, clean_title)
+        elif choice == "2":
+            return save_dir
+        elif choice == "3":
+            custom = input(f"{Colors.BOLD}Enter folder name: {Colors.RESET}").strip()
+            if custom:
+                return os.path.join(save_dir, sanitize_filename(custom))
+            else:
+                return os.path.join(save_dir, clean_title)
+        else:
+            print(f"{Colors.RED}Invalid selection. Please enter 1, 2, or 3.{Colors.RESET}")
+
+def build_playlist_command(url: str, v_quality: str, a_quality: dict,
+                           naming_pattern: str, output_dir: str,
+                           range_info: dict, use_archive: bool):
+    """Construct the yt-dlp command for playlist/course downloads."""
+    cmd = ["yt-dlp", "--no-warnings", "--yes-playlist"]
+
+    # Output filename template with zero-padded index
+    out_template = os.path.join(output_dir, f"{naming_pattern}.%(ext)s")
+    cmd.extend(["-o", out_template])
+
+    # Playlist range filtering
+    if range_info["mode"] == "range":
+        cmd.extend(["--playlist-start", str(range_info["start"]),
+                     "--playlist-end", str(range_info["end"])])
+    elif range_info["mode"] == "items":
+        items_str = ",".join(str(i) for i in range_info["items"])
+        cmd.extend(["--playlist-items", items_str])
+    # "all" mode: no extra flags needed
+
+    # Download archive for resume support
+    if use_archive:
+        archive_path = os.path.join(output_dir, ".ytdl-archive.txt")
+        cmd.extend(["--download-archive", archive_path])
+
+    # Quality settings (same logic as single-video)
+    if v_quality == "audio_only":
+        cmd.append("-x")
+        if a_quality["type"] == "mp3":
+            cmd.extend(["--audio-format", "mp3", "--audio-quality", a_quality["quality"]])
+        else:
+            cmd.extend(["--audio-format", "best", "--audio-quality", "0"])
+    else:
+        if v_quality == "best":
+            cmd.extend(["-f", "bv*+ba/b"])
+        else:
+            cmd.extend(["-f", f"bv*[height<={v_quality}]+ba/b[height<={v_quality}]/best"])
+        cmd.extend(["--merge-output-format", "mp4"])
+        if a_quality["type"] == "encode":
+            cmd.extend(["--postprocessor-args", f"Merger:-c:a aac -b:a {a_quality['quality']}"])
+
+    # Throttle to be polite & avoid rate limits
+    cmd.extend(["--sleep-interval", "1", "--max-sleep-interval", "3"])
+
+    cmd.append(url)
+    return cmd
+
+# ─────────────────────────────────────────────────────────────────
+#               SINGLE VIDEO PROMPTS (unchanged)
+# ─────────────────────────────────────────────────────────────────
 
 def prompt_video_quality():
     """Prompt user to select video quality."""
@@ -214,6 +448,10 @@ def build_ytdlp_command(url: str, v_quality: str, a_quality: dict, name_info: di
     cmd.append(url)
     return cmd
 
+# ─────────────────────────────────────────────────────────────────
+#                        MAIN EXECUTION
+# ─────────────────────────────────────────────────────────────────
+
 def run_download():
     """Main execution loop."""
     print_banner()
@@ -224,7 +462,7 @@ def run_download():
     while True:
         try:
             print(f"\n{Colors.BOLD}{Colors.MAGENTA}══════════════════════════════════════════════════════════════════{Colors.RESET}")
-            url = input(f"{Colors.BOLD}{Colors.CYAN}🔗 Enter video link / URL (or 'q' to exit): {Colors.RESET}").strip()
+            url = input(f"{Colors.BOLD}{Colors.CYAN}🔗 Enter video/playlist URL (or 'q' to exit): {Colors.RESET}").strip()
             
             if not url:
                 print(f"{Colors.RED}[!] URL cannot be empty.{Colors.RESET}")
@@ -233,64 +471,172 @@ def run_download():
                 print(f"\n{Colors.GREEN}Thanks for using YT-DLP Downloader. Goodbye! 👋{Colors.RESET}\n")
                 break
 
-            # Fetch metadata
-            info = get_video_info(url)
-            if not info["valid"]:
-                print(f"{Colors.RED}[✘] Could not retrieve video information.{Colors.RESET}")
-                print(f"{Colors.YELLOW}Error detail:{Colors.RESET} {info.get('error', 'Unknown error')}")
-                continue
+            # ── Detect playlist vs single video ──
+            is_playlist = detect_playlist(url)
 
-            # Display fetched metadata
-            print(f"\n{Colors.GREEN}{Colors.BOLD}✓ Video Detected!{Colors.RESET}")
-            print(f"  {Colors.BOLD}📌 Title:{Colors.RESET}    {info['title']}")
-            print(f"  {Colors.BOLD}👤 Channel:{Colors.RESET}  {info['uploader']}")
-            print(f"  {Colors.BOLD}⏱️ Duration:{Colors.RESET} {info['duration']}")
+            if is_playlist:
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                #        PLAYLIST / COURSE MODE
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-            # Step 1: Video Quality
-            v_quality = prompt_video_quality()
-            is_audio_only = (v_quality == "audio_only")
+                # Offer choice: some URLs could be both video+playlist
+                print(f"\n{Colors.YELLOW}{Colors.BOLD}🎵 Playlist / Course URL detected!{Colors.RESET}")
+                print(f" {Colors.GREEN}[1]{Colors.RESET} 📋 Download entire playlist / course {Colors.DIM}[Default]{Colors.RESET}")
+                print(f" {Colors.GREEN}[2]{Colors.RESET} 🎬 Download only the single video from this URL")
+                mode_choice = input(f"\n{Colors.BOLD}Select mode [1-2] (Default: 1): {Colors.RESET}").strip()
 
-            # Step 2: Audio Quality
-            a_quality = prompt_audio_quality(is_audio_only)
+                if mode_choice == "2":
+                    is_playlist = False  # Fall through to single-video flow below
 
-            # Step 3: Name (Default or Custom)
-            name_info = prompt_filename(info["title"])
+            if is_playlist:
+                # Fetch playlist info
+                pl_info = get_playlist_info(url)
+                if not pl_info["valid"]:
+                    print(f"{Colors.RED}[✘] Could not retrieve playlist information.{Colors.RESET}")
+                    print(f"{Colors.YELLOW}Error detail:{Colors.RESET} {pl_info.get('error', 'Unknown error')}")
+                    continue
 
-            # Step 4: Destination Directory
-            save_dir = prompt_destination(default_dir)
+                if pl_info["count"] == 0:
+                    print(f"{Colors.RED}[✘] Playlist appears to be empty.{Colors.RESET}")
+                    continue
 
-            # Confirmation Summary
-            v_quality_labels = {
-                "best": "Best Available (Max 4K/1080p)",
-                "1080": "1080p (Full HD)",
-                "720": "720p (HD)",
-                "480": "480p (SD)",
-                "360": "360p (Low)",
-                "audio_only": "Audio Only (No Video)"
-            }
+                # Display playlist details
+                display_playlist_info(pl_info)
 
-            print(f"\n{Colors.CYAN}{Colors.BOLD}╔══════════════════════════════════════════════════════════════════╗{Colors.RESET}")
-            print(f"{Colors.CYAN}{Colors.BOLD}║                     🚀  READY TO DOWNLOAD                       ║{Colors.RESET}")
-            print(f"{Colors.CYAN}{Colors.BOLD}╠══════════════════════════════════════════════════════════════════╣{Colors.RESET}")
-            print(f"  {Colors.BOLD}Video Quality:{Colors.RESET}   {v_quality_labels.get(v_quality, v_quality)}")
-            print(f"  {Colors.BOLD}Audio Quality:{Colors.RESET}   {a_quality['desc']}")
-            print(f"  {Colors.BOLD}File Name:{Colors.RESET}       {name_info['name']}")
-            print(f"  {Colors.BOLD}Output Dir:{Colors.RESET}      {save_dir}")
-            print(f"{Colors.CYAN}{Colors.BOLD}╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}")
+                # Step 1: Video Quality
+                v_quality = prompt_video_quality()
+                is_audio_only = (v_quality == "audio_only")
 
-            # Build and execute command
-            cmd = build_ytdlp_command(url, v_quality, a_quality, name_info, save_dir)
-            
-            print(f"\n{Colors.YELLOW}{Colors.BOLD}💥 Boom! Starting download with yt-dlp...{Colors.RESET}\n")
+                # Step 2: Audio Quality
+                a_quality = prompt_audio_quality(is_audio_only)
 
-            # Execute yt-dlp with live progress stream
-            result = subprocess.run(cmd)
+                # Step 3: Download Range
+                range_info = prompt_playlist_range(pl_info["count"])
 
-            if result.returncode == 0:
-                print(f"\n{Colors.GREEN}{Colors.BOLD}🎉 Download Complete!{Colors.RESET}")
-                print(f"{Colors.GREEN}📁 Saved inside:{Colors.RESET} {save_dir}\n")
+                # Step 4: File Naming
+                naming_pattern = prompt_playlist_naming()
+
+                # Step 5: Save Location
+                save_dir = prompt_destination(default_dir)
+
+                # Step 6: Subfolder
+                output_dir = prompt_playlist_folder(pl_info["title"], save_dir)
+                os.makedirs(output_dir, exist_ok=True)
+
+                # Step 7: Resume support
+                print(f"\n{Colors.CYAN}{Colors.BOLD}─── Resume Support ───{Colors.RESET}")
+                print(f" Enable download archive to skip already-downloaded videos on re-run.")
+                archive_choice = input(f"{Colors.BOLD}Enable resume support? (Y/n): {Colors.RESET}").strip().lower()
+                use_archive = archive_choice not in ("n", "no")
+
+                # Calculate download count for summary
+                if range_info["mode"] == "all":
+                    dl_count = pl_info["count"]
+                elif range_info["mode"] == "range":
+                    dl_count = range_info["end"] - range_info["start"] + 1
+                else:
+                    dl_count = len(range_info["items"])
+
+                v_quality_labels = {
+                    "best": "Best Available (Max 4K/1080p)",
+                    "1080": "1080p (Full HD)",
+                    "720": "720p (HD)",
+                    "480": "480p (SD)",
+                    "360": "360p (Low)",
+                    "audio_only": "Audio Only (No Video)"
+                }
+
+                # Confirmation Summary
+                print(f"\n{Colors.CYAN}{Colors.BOLD}╔══════════════════════════════════════════════════════════════════╗{Colors.RESET}")
+                print(f"{Colors.CYAN}{Colors.BOLD}║              📋  PLAYLIST DOWNLOAD READY                        ║{Colors.RESET}")
+                print(f"{Colors.CYAN}{Colors.BOLD}╠══════════════════════════════════════════════════════════════════╣{Colors.RESET}")
+                print(f"  {Colors.BOLD}Playlist:{Colors.RESET}       {pl_info['title']}")
+                print(f"  {Colors.BOLD}Videos:{Colors.RESET}         {dl_count} of {pl_info['count']}")
+                print(f"  {Colors.BOLD}Video Quality:{Colors.RESET}  {v_quality_labels.get(v_quality, v_quality)}")
+                print(f"  {Colors.BOLD}Audio Quality:{Colors.RESET}  {a_quality['desc']}")
+                print(f"  {Colors.BOLD}Output Dir:{Colors.RESET}     {output_dir}")
+                print(f"  {Colors.BOLD}Resume:{Colors.RESET}         {'Enabled ✓' if use_archive else 'Disabled'}")
+                print(f"{Colors.CYAN}{Colors.BOLD}╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}")
+
+                # Build and execute playlist command
+                cmd = build_playlist_command(url, v_quality, a_quality,
+                                             naming_pattern, output_dir,
+                                             range_info, use_archive)
+
+                print(f"\n{Colors.YELLOW}{Colors.BOLD}💥 Boom! Starting playlist download with yt-dlp...{Colors.RESET}\n")
+
+                result = subprocess.run(cmd)
+
+                if result.returncode == 0:
+                    print(f"\n{Colors.GREEN}{Colors.BOLD}🎉 Playlist Download Complete!{Colors.RESET}")
+                    print(f"{Colors.GREEN}📁 Saved inside:{Colors.RESET} {output_dir}\n")
+                else:
+                    print(f"\n{Colors.RED}[!] Download finished with errors (code {result.returncode}).{Colors.RESET}")
+                    print(f"{Colors.YELLOW}Some videos may have downloaded successfully. Check the output folder.{Colors.RESET}\n")
+
             else:
-                print(f"\n{Colors.RED}[!] Download finished with errors (code {result.returncode}).{Colors.RESET}\n")
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                #        SINGLE VIDEO MODE
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+                # Fetch metadata
+                info = get_video_info(url)
+                if not info["valid"]:
+                    print(f"{Colors.RED}[✘] Could not retrieve video information.{Colors.RESET}")
+                    print(f"{Colors.YELLOW}Error detail:{Colors.RESET} {info.get('error', 'Unknown error')}")
+                    continue
+
+                # Display fetched metadata
+                print(f"\n{Colors.GREEN}{Colors.BOLD}✓ Video Detected!{Colors.RESET}")
+                print(f"  {Colors.BOLD}📌 Title:{Colors.RESET}    {info['title']}")
+                print(f"  {Colors.BOLD}👤 Channel:{Colors.RESET}  {info['uploader']}")
+                print(f"  {Colors.BOLD}⏱️ Duration:{Colors.RESET} {info['duration']}")
+
+                # Step 1: Video Quality
+                v_quality = prompt_video_quality()
+                is_audio_only = (v_quality == "audio_only")
+
+                # Step 2: Audio Quality
+                a_quality = prompt_audio_quality(is_audio_only)
+
+                # Step 3: Name (Default or Custom)
+                name_info = prompt_filename(info["title"])
+
+                # Step 4: Destination Directory
+                save_dir = prompt_destination(default_dir)
+
+                # Confirmation Summary
+                v_quality_labels = {
+                    "best": "Best Available (Max 4K/1080p)",
+                    "1080": "1080p (Full HD)",
+                    "720": "720p (HD)",
+                    "480": "480p (SD)",
+                    "360": "360p (Low)",
+                    "audio_only": "Audio Only (No Video)"
+                }
+
+                print(f"\n{Colors.CYAN}{Colors.BOLD}╔══════════════════════════════════════════════════════════════════╗{Colors.RESET}")
+                print(f"{Colors.CYAN}{Colors.BOLD}║                     🚀  READY TO DOWNLOAD                       ║{Colors.RESET}")
+                print(f"{Colors.CYAN}{Colors.BOLD}╠══════════════════════════════════════════════════════════════════╣{Colors.RESET}")
+                print(f"  {Colors.BOLD}Video Quality:{Colors.RESET}   {v_quality_labels.get(v_quality, v_quality)}")
+                print(f"  {Colors.BOLD}Audio Quality:{Colors.RESET}   {a_quality['desc']}")
+                print(f"  {Colors.BOLD}File Name:{Colors.RESET}       {name_info['name']}")
+                print(f"  {Colors.BOLD}Output Dir:{Colors.RESET}      {save_dir}")
+                print(f"{Colors.CYAN}{Colors.BOLD}╚══════════════════════════════════════════════════════════════════╝{Colors.RESET}")
+
+                # Build and execute command
+                cmd = build_ytdlp_command(url, v_quality, a_quality, name_info, save_dir)
+                
+                print(f"\n{Colors.YELLOW}{Colors.BOLD}💥 Boom! Starting download with yt-dlp...{Colors.RESET}\n")
+
+                # Execute yt-dlp with live progress stream
+                result = subprocess.run(cmd)
+
+                if result.returncode == 0:
+                    print(f"\n{Colors.GREEN}{Colors.BOLD}🎉 Download Complete!{Colors.RESET}")
+                    print(f"{Colors.GREEN}📁 Saved inside:{Colors.RESET} {save_dir}\n")
+                else:
+                    print(f"\n{Colors.RED}[!] Download finished with errors (code {result.returncode}).{Colors.RESET}\n")
 
             # Ask to download another
             again = input(f"{Colors.BOLD}Do you want to download another video? (y/N): {Colors.RESET}").strip().lower()
